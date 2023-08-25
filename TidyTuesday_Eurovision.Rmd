@@ -1,0 +1,242 @@
+---
+title: "Advanced R: TidyTuesday Project"
+author: "Sara Ellegaard Andreasen, Lene Munk, Alisha Hall"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+# Define default chunk behavior
+  knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+```
+
+## Eurovision data
+
+We chose to investigate 2022 data from Tanya Shapiro about the Eurovision Song Contest: <https://github.com/tashapiro/eurovision-contest>.
+
+```{r import-data, echo = TRUE}
+
+# Packages
+  library(tidyr)
+  library(dplyr)
+  library(ggplot2)
+
+# Set theme for all following graphs
+  theme_set(theme_bw())
+
+# Read in two datasets and create dataframes
+  # tuesdata <-   tidytuesdayR::tt_load('2022-05-17')
+  # eurovision <- tuesdata[["eurovision"]]
+  # votes <-      tuesdata[["eurovision-votes"]]
+  # save(eurovision, votes, file = "/Users/au734169/Documents/01_PhD/Advanced_R/eurovision.rda")
+  load(file = "/Users/au734169/Documents/01_PhD/Advanced_R/eurovision.rda")
+  
+# Explore data
+  knitr::kable(votes[1:10,])
+  knitr::kable(eurovision[1:10,])
+  # str(votes)
+  # str(eurovision)
+
+```
+
+## Who won?
+Question: Who won the Eurovision Song Contest each year? Was there always one winner?
+
+```{r winners, echo = TRUE}  
+  
+# Who are the winners of the contest each year?   
+  winners <- eurovision %>% 
+    filter(winner == TRUE & section %in% c("final", "grand-final")) %>% 
+    select(year, host_country, section, winner, artist, artist_country, total_points) %>% 
+    arrange(year) # %>% 
+    # nrow()
+  # There are 69 rows in the dataset.
+
+  knitr::kable(winners[1:10,])
+  
+# Who are the winning countries?
+  ggplot(data = winners,
+         aes(x = forcats::fct_infreq(artist_country))) +
+           geom_bar() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(title = "Number of wins per country",
+         x = "Country",
+         y = "Number of wins")
+  
+# How many distinct years are present in the dataset?  
+  eurovision %>% 
+    distinct(year) %>% 
+    nrow()
+  # There are 67 distinct years in the dataset.
+  
+# Are there any years with 0 winners?
+    winners %>% 
+      distinct(year) %>% 
+      pull(year) %>%  # creates a vector from a column
+      setdiff(c(1956:2022), .) # get all rows in x that are not in y
+    # There was no winner in 2020 because the contest had to be stopped due to COVID-19 :(
+  
+# Are there any years with >1 winner?  
+  winners %>% 
+    group_by(year) %>% 
+    filter(n()>1) %>% 
+    knitr::kable(.)
+  # Yes, 1969 had 4 winners.
+  
+
+```
+
+## Points system
+Question: How many points are being distributed each year?
+
+```{r countries, echo = TRUE} 
+
+# Calculate the total number of points for each year
+  points <- eurovision %>% 
+    group_by(year) %>% 
+    filter(section %in% c("final", "grand-final")) %>% 
+    summarize(total_points_year = sum(total_points, na.rm = TRUE))
+
+# Get the number of countries participating by year
+  countries <- eurovision %>% 
+    group_by(year) %>% 
+    summarize(n_countries_year = n_distinct(artist_country))
+  
+# Join datasets  
+  by_year <- full_join(points, countries, by = "year") %>% 
+    mutate(points_per_country = total_points_year/n_countries_year)
+
+# Plot total number of points
+  ggplot(data = by_year,
+         aes(x = year,
+             y = total_points_year,
+             size = n_countries_year)) +
+    geom_point() +
+    labs(title = "Eurovision: Total points to distribute each year", 
+         x = "Year", 
+         y = "Total points", 
+         size = "Participating countries")
+  
+  ggplot(data = by_year,
+         aes(x = year,
+             y = points_per_country,
+             color = n_countries_year)) +
+    geom_point() +
+    labs(title = "Eurovision: Points to distribute per country each year", 
+         x = "Year", 
+         y = "Points to distribute per country", 
+         col = "Participating countries")
+
+# Why were no points assigned in 1956?
+  eurovision %>% 
+    filter(year == 1956) %>% 
+    select(event, artist, artist_country, section, total_points, rank, winner) %>% 
+    knitr::kable(.)
+  # There was no points, only rank = 1 for the winner and rank = 2 for the rest.
+  
+# Why were no points assigned in 2020?
+  eurovision %>% 
+    filter(year == 2020) %>% 
+    select(event, artist, artist_country, section, total_points, rank, winner) %>% 
+    knitr::kable(.)
+  # Eurovision was cancelled and no points were assigned because of COVID-19 :(
+
+
+```
+
+## What proportion of points did the winner get?
+Question: What proportion of the total points distributed that year did the winner of the final get?
+
+```{r winners-points, echo = TRUE}  
+
+# What proportion of points did the winners get?
+  winners_points <- left_join(winners, by_year, by = "year") %>% 
+    mutate(total_points_prop = round((total_points / total_points_year) * 100, 1))
+  
+# Plot results
+  ggplot(data = winners_points, aes(x=year, y=total_points_prop, fill = artist_country)) +
+    geom_bar(stat = "identity") +
+    labs(title = "Percent of points received by Eurovision winner by year", 
+         x = "Year", 
+         y = "Points received by winner (%)", 
+         fill = "Country of winner")
+  
+
+```
+
+## Flow of points from country to country
+Question: Which countries are sending votes to each other?
+
+```{r point-flow, echo=TRUE} 
+
+# Create from-to variable
+  votes$from_to <- paste(votes$from_country, votes$to_country)
+
+# Get the sum of votes
+  sum_votes <- votes %>%
+    filter(is.na(duplicate)) %>%
+    select(from_to, points) %>%
+    group_by(from_to) %>%
+    summarise(sum_points = sum(points)) %>%
+    separate(from_to, c("From", "To"))
+  
+# Plot flow of points within countries that received at least 250 points
+  ggplot(data = filter(sum_votes, sum_points > 250),
+         aes(x = From,
+             y = To)) +
+    geom_raster(aes(fill = sum_points)) +
+    scale_fill_viridis_c(direction = -1) +
+    labs(title = "Eurovision point distribution over the years 1956 - 2022 (>250 points)",
+         x = "From country",
+         y = "To country",
+         fill = "Total points \n from country \n to country") +
+    theme(axis.text.x = element_text(angle = 90))
+  
+# Plot flow of points within countries that received at least 400 points
+  ggplot(data = filter(sum_votes, sum_points > 400),
+         aes(x = From,
+             y = To)) +
+    geom_raster(aes(fill = sum_points)) +
+    scale_fill_viridis_c(direction = -1) +
+    labs(title = "Eurovision point distribution over the years 1956 - 2022 (>400 points)",
+         x = "From country",
+         y = "To country",
+         fill = "Total points \n from country \n to country") +
+    theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r correlation, eval = FALSE, include = FALSE} 
+
+# Read in extra package
+  library(corrr)
+
+# Filter dataset
+  votes_small <- votes %>% 
+    filter(is.na(duplicate) & semi_final == "f" & year == 2022) %>% 
+    select(from_country, to_country, points) %>% 
+    rename(country1 = from_country, country2 = to_country)
+
+# How many unique combinations are in the dataset?
+  votes_small %>% 
+    distinct(country1, country2) %>% 
+    nrow()
+  # 975 unique combinations (dataframe is twice as long)
+  
+# How many countries are giving vs. receiving points in the final?  
+  votes_small %>% 
+    summarize(n_from_country = n_distinct(country1), 
+              n_to_country = n_distinct(country2))
+  # Only 25 of 40 participating countries received points in the final in 2022
+  # That means that 15 countries cannot possibly receive points (because not in final).
+  
+# Merge to get four columns with bidirectional points between country pairs  
+  test <- left_join(votes_small, votes_small, join_by(country2==country1, country1==country2)) %>% 
+    distinct(country1, country2, .keep_all = TRUE) %>% 
+    rename(points_1_to_2 = points.x, points_2_to_1 = points.y) %>% 
+    mutate(country_diff = points_1_to_2 - points_2_to_1)
+
+```
+
